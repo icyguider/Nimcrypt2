@@ -732,8 +732,8 @@ when defined(windows):
                 discard os.execShellCmd(fmt"nim c -d=release --cc:clang --opt:size --passL:-s --passC:'-mllvm -bcf -mllvm -sub -mllvm -fla -mllvm -split -aesSeed={aesSeed}' -d=mingw --hints=on --app=gui --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
             else:
                 echo "[!] Obfuscator-LLVM or wclang not installed or in path! Ensure that you can run 'x86_64-w64-mingw32-clang -v' and it shows 'Obfuscator-LLVM'."
-    #discard os.execShellCmd("rm syscalls2.nim")
-    #discard os.execShellCmd("rm stub.nim")
+    discard os.execShellCmd("rm syscalls2.nim")
+    discard os.execShellCmd("rm stub.nim")
     if os.fileExists(outfile) == true:
         echo "\n" & fmt"[+] Stub compiled successfully as {outfile}"
     else:
