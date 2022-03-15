@@ -92,6 +92,14 @@ nim c -d=release --cc:gcc --embedsrc=on --hints=on --app=console --cpu=amd64 --o
 3. Install wclang and add it's binaries to your PATH
 4. Backup existing clang library files, copy new newly built Obfuscator-LLVM library includes to /usr/lib/clang/OLD_VERSION/
 
+In addition, you must add the following lines to your `nim.cfg` file to point nim to your wclang binaries:
+```
+amd64.windows.clang.exe = "x86_64-w64-mingw32-clang"
+amd64.windows.clang.linkerexe = "x86_64-w64-mingw32-clang"
+amd64.windows.clang.cpp.exe = "x86_64-w64-mingw32-clang++"
+amd64.windows.clang.cpp.linkerexe = "x86_64-w64-mingw32-clang++"
+```
+
 There is probably a better way to do this but this is what worked for me. If you have issues, just keep trying and ensure that you can run `x86_64-w64-mingw32-clang -v` and it shows "Obfuscator-LLVM" in the output. Also ensure MinGW is using the Obfuscator-LLVM library files: Nim will give you an error if not.
 
 #### Known Bugs:
