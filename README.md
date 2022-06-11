@@ -28,7 +28,7 @@ Additionally, I would like to thank [@ajpc500](https://twitter.com/ajpc500) for 
 Nimcrypt v 2.0
 
 Usage:
-  nimcrypt -f file_to_load -t csharp/raw/pe [-o <output>] [-p <process>] [-n] [-u] [-s] [-e] [-g] [-l] [-v]
+  nimcrypt -f file_to_load -t csharp/raw/pe [-o <output>] [-p <process>] [-n] [-u] [-s] [-e] [-g] [-l] [-v] [--no-ppid-spoof]
   nimcrypt (-h | --help)
 
 Options:
@@ -45,6 +45,7 @@ Options:
   -l --llvm-obfuscator   Use Obfuscator-LLVM to compile binary
   -n --no-randomization  Disable syscall name randomization
   -s --no-sandbox        Disable sandbox checks
+  --no-ppid-spoof        Disable PPID Spoofing
 ```
 #### Features:
 * NtQueueApcThread Shellcode Execution w/ PPID Spoofing & 3rd Party DLL Blocking

