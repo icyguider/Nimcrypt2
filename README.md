@@ -103,6 +103,23 @@ amd64.windows.clang.cpp.linkerexe = "x86_64-w64-mingw32-clang++"
 
 There is probably a better way to do this but this is what worked for me. If you have issues, just keep trying and ensure that you can run `x86_64-w64-mingw32-clang -v` and it shows "Obfuscator-LLVM" in the output. Also ensure MinGW is using the Obfuscator-LLVM library files: Nim will give you an error if not.
 
+#### Usage with Docker
+
+If you run into issues getting the nim toolchain to work on your system, you can build and run nymcrypt inside docker instead.
+
+To build the docker image from a checkout of the git repository:
+```
+docker build -t nimcrypt .
+```
+
+To run nimcrypt inside docker on a binary called `to-pack.exe`:
+```
+docker run -v $PWD:/pack nimcrypt ./nimcrypt -f /pack/to-pack.exe -t pe -o /pack/packed.exe
+```
+
+Here the local directory ($PWD) is assigned the /pack/ directory in the container using a docker volume with `-v`.
+
+
 #### Known Bugs:
 * As [described](https://github.com/S3cur3Th1sSh1t/Nim-RunPE/blob/a117ecec635824703047c1d850607bdf2cfa628b/README.md?plain=1#L13) by ShitSecure, if the release version of mimikatz is loaded via the PE loader, it will not accept commands for some unknown reason. Using a version of mimikatz that was compiled from source fixes this issue.
 
